@@ -12,11 +12,15 @@
     $ sudo pip install pytesseract # OCR工具的Python支持包
     $ sudo pip install baidu-aip # 在线OCR：百度提供的字符识别工具。
 
-### 3.  示例:
+### 3.  注意事项：
+
+程序默认使用离线OCR，如果想使用百度在线OCR，需要在百度云网站申请创建新项目，将项目的apiKey，appId, SecretKey填写到程序中，并将OCR_ONLINE设置为True。(在线识别效果略好于离线识别效果，尤其在数字、英文字母、标点方面效果更好)。
+
+### 4.  示例:
     $ python pdfconv.py xxxx.pdf
 运行之后生成 xxxx.txt
 
-### 2.	一些问题
+### 5.	一些问题
 
 程序通过百余行代码实现，解析普通的PDF文件问题不大，但仍存在一些问题：
     
