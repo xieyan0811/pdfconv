@@ -17,6 +17,7 @@ config = {
     'apiKey': '',
     'secretKey': ''
 }
+
 client = AipOcr(**config)
 
 def img_to_str_baidu(image_path):
@@ -30,52 +31,16 @@ def img_to_str_baidu(image_path):
 ######################################
 # 解析PDF文件
 
-from pdfminer.pdftypes import LITERALS_DCT_DECODE, LITERALS_FLATE_DECODE
-from pdfminer.pdfcolor import LITERAL_DEVICE_GRAY, LITERAL_DEVICE_RGB
-from pdfminer.pdfparser import PDFParser,PDFDocument
-from pdfminer.pdfinterp import PDFResourceManager, PDFPageInterpreter
-from pdfminer.converter import PDFPageAggregator
-from pdfminer.layout import LTTextBoxHorizontal, LAParams, LTFigure, LTImage, LTChar, LTTextLine
-from pdfminer.pdfinterp import PDFTextExtractionNotAllowed
+import fitz
+import time
+import re
 import os
 import sys
 import numpy as np
-import importlib
-importlib.reload(sys)
 
 TMPDIR = 'tmp/'
 PARSEIMG = True
 OCR_ONLINE = False
-
-# 保存图片
-def write_image(image, outdir):
-    stream = image.stream
-    filters = stream.get_filters()
-    if len(filters) == 1 and filters[0] in LITERALS_DCT_DECODE:
-        ext = '.jpg'
-        data = stream.get_rawdata()
-    elif image.colorspace is LITERAL_DEVICE_RGB:
-        ext = '.bmp'
-        data = create_bmp(stream.get_data(), stream.bits*3, image.width, image.height)
-    elif image.colorspace is LITERAL_DEVICE_GRAY:
-        ext = '.bmp'
-        data = create_bmp(stream.get_data(), stream.bits, image.width, image.height)
-    else:
-        ext = '.img'
-        data = stream.get_data()
-    name = image.name+ext
-    path = os.path.join(outdir, name)
-    fp = open(path, 'wb')
-    fp.write(data)
-    fp.close()
-    return path, len(data)
-
-# 写入文件
-def write_file(path, text, ftype, debug=False):
-    with open(path, ftype) as f:
-        if debug:
-            print("write", len(text))
-        f.write(text)
 
 # 去掉文中多余的回车
 def adjust(inpath, outpath):
@@ -95,21 +60,13 @@ def adjust(inpath, outpath):
     write_file(outpath, string, 'w')
     return
 
-# 解析每个数据块
-def parse_section(layout, outpath, debug = False):
-    for x in layout:
-        if (isinstance(x, LTTextBoxHorizontal)): # 文本
-            write_file(outpath, x.get_text(), 'a')
-        elif (isinstance(x, LTFigure)):
-            parse_section(x, outpath)
-        elif (isinstance(x, LTImage)) and PARSEIMG: # 图片
-            path,length = write_image(x, TMPDIR)
-            if length > 0:
-                if OCR_ONLINE:
-                    write_file(outpath, img_to_str_baidu(path), 'a')
-                else:
-                    write_file(outpath, img_to_str_tesseract(path), 'a')
-                write_file(outpath, '\n' + '-----------' + '\n', 'a')
+# 写入文件
+def write_file(path, text, ftype, debug=False):
+    with open(path, ftype) as f:
+        if debug:
+            print("write", len(text))
+        f.write(text)
+        f.close()
 
 # 删除文件  
 def remove(path):
@@ -132,26 +89,44 @@ def parse(inpath, outpath):
     remove(TMPDIR) # 清除临时目录 
     os.mkdir(TMPDIR)
     remove(outpath) # 清除输出文件
-    fp = open(inpath, 'rb')
-    praser = PDFParser(fp) # pdf文档分析器
-    doc = PDFDocument() # 创建一个PDF文档
-    praser.set_document(doc) # 连接分析器与文档对象
-    doc.set_parser(praser)
-    doc.initialize()
-    
-    if not doc.is_extractable: # 是否提供txt转换
-        raise PDFTextExtractionNotAllowed
-    else:
-        rsrcmgr = PDFResourceManager() # 创建PDF资源管理器
-        laparams = LAParams() 
-        device = PDFPageAggregator(rsrcmgr, laparams=laparams)
-        interpreter = PDFPageInterpreter(rsrcmgr, device) # 创建PDF解释器对象
-                
-        for idx,page in enumerate(doc.get_pages()): # 获取page列表
-            interpreter.process_page(page)
-            layout = device.get_result()
-            print("parse", idx)
-            parse_section(layout, outpath)
+
+    t0 = time.clock()
+    doc = fitz.open(inpath)
+    lenXREF = doc.xrefLength()
+    print("文件名:{}, 页数: {}, 对象: {}".format(inpath, len(doc), lenXREF - 1))
+
+    imgcount = 0
+    for i,page in enumerate(doc):
+        t1 = time.clock()
+        # 文字
+        text = page.get_text()
+        if len(text) > 0:
+             write_file(outpath, text, 'a')
+        # 图片        
+        imglist = page.get_images() # 解析该页中图片
+        for item in imglist:
+            xref = item[0]
+            pix = fitz.Pixmap(doc, xref)
+            new_name = "{}.png".format(imgcount)
+            # 如果pix.n<5,可以直接存为PNG
+            path = os.path.join(TMPDIR, new_name)
+            if pix.n < 5:
+                pix.writePNG(path)
+            # 否则先转换CMYK
+            else:
+                pix0 = fitz.Pixmap(fitz.csRGB, pix)
+                pix0.writePNG(path)
+                pix0 = None
+            pix = None
+            if OCR_ONLINE:
+                text = img_to_str_baidu(path)
+            else:
+                text = img_to_str_tesseract(path)
+            print("img->text", text)
+            write_file(outpath, text, 'a')
+            write_file(outpath, '\n' + '-----------' + '\n', 'a')
+            imgcount += 1
+        print("page {} 运行时间:{}s".format(i, {t1 - t0}))
 
 if __name__ == '__main__':
     if len(sys.argv) < 2:
@@ -162,5 +137,3 @@ if __name__ == '__main__':
     txtfile = pdffile.replace('pdf','txt')
     parse(pdffile, tmpfile)
     adjust(tmpfile, txtfile)
-
-
